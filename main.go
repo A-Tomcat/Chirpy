@@ -1,12 +1,19 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"main/internal/database"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 /*
@@ -31,10 +38,15 @@ psql "postgres://atomcat:lulatsch12@localhost:5432/chirpy"
 if user not authentificated:
 sudo -u postgres psql -d chirpy
 GRANT ALL ON SCHEMA public TO atomcat;
+
+go get github.com/google/uuid
+go get github.com/lib/pq
+go get github.com/joho/godotenv
 */
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -142,9 +154,28 @@ func handler(writer http.ResponseWriter, request *http.Request) {
 }
 
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		fmt.Println("couldn't load .env")
+	}
+	dbURL := os.Getenv("DB_URL")
+	if dbURL == "" {
+		log.Fatal("DB_URL is not set")
+	}
 	const filepathRoot = "."
-	cfg := apiConfig{}
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	cfg := apiConfig{
+		dbQueries: database.New(db),
+	}
 	cfg.fileserverHits.Store(0)
+	err = db.Ping()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	sMux := http.NewServeMux()
 	newServer := http.Server{
 		Handler: sMux,
@@ -158,5 +189,5 @@ func main() {
 	sMux.HandleFunc("GET /admin/metrics", cfg.handlerShowMetrics)
 	sMux.HandleFunc("POST /api/validate_chirp", handlerCheckChirp)
 
-	newServer.ListenAndServe()
+	log.Fatal(newServer.ListenAndServe())
 }
