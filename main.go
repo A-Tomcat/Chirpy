@@ -25,8 +25,12 @@ postgres password = pass
 [changed with ALTER USER postgres WITH PASSWORD 'pass';]
 
 
-goose -dir sql/schema postgres "postgres://postgres:pass@localhost:5432/chirpy?sslmode=disable" up
-
+goose -dir sql/schema postgres "postgres://atomcat:lulatsch12@localhost:5432/chirpy?sslmode=disable" up
+directly connect to DB :
+psql "postgres://atomcat:lulatsch12@localhost:5432/chirpy"
+if user not authentificated:
+sudo -u postgres psql -d chirpy
+GRANT ALL ON SCHEMA public TO atomcat;
 */
 
 type apiConfig struct {
