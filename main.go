@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,7 +12,9 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -47,6 +50,14 @@ go get github.com/joho/godotenv
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
+	dev            string
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -64,6 +75,15 @@ func (cfg *apiConfig) handlerShowMetrics(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) handlerResetMetrics(w http.ResponseWriter, r *http.Request) {
+	if cfg.dev != "dev" {
+		respondWithError(w, 403, "Forbidden")
+		return
+	}
+	err := cfg.dbQueries.Reset(context.Background())
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
 	cfg.fileserverHits.Store(0)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -153,6 +173,34 @@ func handler(writer http.ResponseWriter, request *http.Request) {
 	}
 }
 
+func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	type Params struct {
+		Email string `json:"email"`
+	}
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+	}
+	params := Params{}
+	if err = json.Unmarshal(data, &params); err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
+	user, err := cfg.dbQueries.CreateUser(context.Background(), params.Email)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
+	mUser := User{
+		ID:        user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email:     user.Email,
+	}
+	respondWithJson(w, http.StatusCreated, mUser)
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -162,6 +210,7 @@ func main() {
 	if dbURL == "" {
 		log.Fatal("DB_URL is not set")
 	}
+	dev := os.Getenv("PLATFORM")
 	const filepathRoot = "."
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -169,6 +218,7 @@ func main() {
 	}
 	cfg := apiConfig{
 		dbQueries: database.New(db),
+		dev:       dev,
 	}
 	cfg.fileserverHits.Store(0)
 	err = db.Ping()
@@ -188,6 +238,7 @@ func main() {
 	sMux.HandleFunc("POST /admin/reset", cfg.handlerResetMetrics)
 	sMux.HandleFunc("GET /admin/metrics", cfg.handlerShowMetrics)
 	sMux.HandleFunc("POST /api/validate_chirp", handlerCheckChirp)
+	sMux.HandleFunc("POST /api/users", cfg.handlerCreateUser)
 
 	log.Fatal(newServer.ListenAndServe())
 }
