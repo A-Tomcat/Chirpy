@@ -21,7 +21,7 @@ import (
 
 /*
 cmd get to folder:
-cd git/workspace/A-Tomcat/Chirpy
+r
 
 to build the Server:
 go build -o out && ./out
@@ -59,6 +59,13 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
 }
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +83,7 @@ func (cfg *apiConfig) handlerShowMetrics(w http.ResponseWriter, r *http.Request)
 
 func (cfg *apiConfig) handlerResetMetrics(w http.ResponseWriter, r *http.Request) {
 	if cfg.dev != "dev" {
-		respondWithError(w, 403, "Forbidden")
+		respondWithError(w, http.StatusForbidden, "Forbidden")
 		return
 	}
 	err := cfg.dbQueries.Reset(context.Background())
@@ -89,43 +96,6 @@ func (cfg *apiConfig) handlerResetMetrics(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusOK)
 	message := fmt.Sprintln("Hits reset to 0.")
 	w.Write([]byte(message))
-}
-
-func handlerCheckChirp(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
-	type Params struct {
-		Body string `json:"body"`
-	}
-	type ReturnParams struct {
-		CleanedBody string `json:"cleaned_body"`
-	}
-
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-		respondWithError(w, 400, err.Error())
-		return
-	}
-	params := Params{}
-	if err = json.Unmarshal(data, &params); err != nil {
-		respondWithError(w, 400, err.Error())
-		return
-	}
-	if len(params.Body) > 140 {
-		respondWithError(w, 400, "Chirp exceeds character limit.")
-		return
-	}
-	profanities := []string{
-		"kerfuffle",
-		"sharbert",
-		"fornax",
-	}
-	newMSG := cleanProfane(params.Body, profanities)
-	respondWithJson(w, http.StatusOK, ReturnParams{
-		CleanedBody: newMSG,
-	})
-	/*
-		respondWithValid(w, http.StatusOK, true)
-	*/
 }
 
 func cleanProfane(msg string, profanities []string) string {
@@ -160,10 +130,6 @@ func respondWithError(w http.ResponseWriter, code int, msg string) error {
 	return respondWithJson(w, code, map[string]string{"error": msg})
 }
 
-func respondWithValid(w http.ResponseWriter, code int, valid bool) error {
-	return respondWithJson(w, code, map[string]bool{"valid": valid})
-}
-
 func handler(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	writer.WriteHeader(http.StatusOK)
@@ -178,14 +144,9 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	type Params struct {
 		Email string `json:"email"`
 	}
-
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-	}
 	params := Params{}
-	if err = json.Unmarshal(data, &params); err != nil {
+	if err := readBody(r, &params); err != nil {
 		respondWithError(w, 400, err.Error())
-		return
 	}
 	user, err := cfg.dbQueries.CreateUser(context.Background(), params.Email)
 	if err != nil {
@@ -199,6 +160,80 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		Email:     user.Email,
 	}
 	respondWithJson(w, http.StatusCreated, mUser)
+}
+
+func readBody(r *http.Request, params interface{}) error {
+	defer r.Body.Close()
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	if err = json.Unmarshal(data, &params); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
+	type Params struct {
+		Body    string
+		User_id uuid.UUID
+	}
+	params := Params{}
+	if err := readBody(r, &params); err != nil {
+		respondWithError(w, 400, err.Error())
+	}
+
+	if len(params.Body) > 140 {
+		respondWithError(w, 400, "Chirp exceeds character limit.")
+		return
+	}
+	profanities := []string{
+		"kerfuffle",
+		"sharbert",
+		"fornax",
+	}
+	newBody := cleanProfane(params.Body, profanities)
+	chirpParams := database.CreateChirpParams{
+		Body:   newBody,
+		UserID: params.User_id,
+	}
+	chirp, err := cfg.dbQueries.CreateChirp(context.Background(), chirpParams)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+	}
+	newChirp := Chirp{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	}
+	respondWithJson(w, http.StatusCreated, newChirp)
+}
+
+func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	type returnParams struct {
+		Chirps []Chirp
+	}
+	chirps, err := cfg.dbQueries.GetChirps(context.Background())
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+	}
+	rChirps := []Chirp{}
+	for _, c := range chirps {
+		chirp := Chirp{
+			ID:        c.ID,
+			CreatedAt: c.CreatedAt,
+			UpdatedAt: c.UpdatedAt,
+			Body:      c.Body,
+			UserID:    c.UserID,
+		}
+		rChirps = append(rChirps, chirp)
+	}
+	respondWithJson(w, http.StatusOK, returnParams{
+		Chirps: rChirps,
+	})
 }
 
 func main() {
@@ -237,8 +272,9 @@ func main() {
 	sMux.HandleFunc("GET /api/healthz", handler)
 	sMux.HandleFunc("POST /admin/reset", cfg.handlerResetMetrics)
 	sMux.HandleFunc("GET /admin/metrics", cfg.handlerShowMetrics)
-	sMux.HandleFunc("POST /api/validate_chirp", handlerCheckChirp)
 	sMux.HandleFunc("POST /api/users", cfg.handlerCreateUser)
+	sMux.HandleFunc("POST /api/chirps", cfg.handlerCreateChirp)
+	sMux.HandleFunc("GET /api/chirps", cfg.handlerGetChirps)
 
 	log.Fatal(newServer.ListenAndServe())
 }
