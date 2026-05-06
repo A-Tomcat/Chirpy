@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"main/internal/auth"
 	"main/internal/database"
 	"net/http"
 	"os"
@@ -45,6 +46,7 @@ GRANT ALL ON SCHEMA public TO atomcat;
 go get github.com/google/uuid
 go get github.com/lib/pq
 go get github.com/joho/godotenv
+go get github.com/alexedwards/argon2id
 */
 
 type apiConfig struct {
@@ -142,7 +144,8 @@ func handler(writer http.ResponseWriter, request *http.Request) {
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	type Params struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	params := Params{}
 	if err := readBody(r, &params); err != nil {
@@ -152,6 +155,17 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		respondWithError(w, 400, err.Error())
 		return
+	}
+	pass, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+	}
+	passParams := database.AddPasswordParams{
+		ID:             user.ID,
+		HashedPassword: pass,
+	}
+	if err := cfg.dbQueries.AddPassword(context.Background(), passParams); err != nil {
+		respondWithError(w, 400, err.Error())
 	}
 	mUser := User{
 		ID:        user.ID,
@@ -254,6 +268,45 @@ func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request
 	respondWithJson(w, http.StatusOK, nchirp)
 }
 
+func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
+	type Params struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+	type returnParams struct {
+		Id        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+	params := Params{}
+	err := readBody(r, &params)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
+	u, err := cfg.dbQueries.GetUserFromEmail(context.Background(), params.Email)
+	if v, err := auth.CheckPasswordHash(params.Password, u.HashedPassword); err == nil {
+		if v {
+			user := returnParams{
+				Id:        u.ID,
+				CreatedAt: u.CreatedAt,
+				UpdatedAt: u.UpdatedAt,
+				Email:     u.Email,
+			}
+			respondWithJson(w, http.StatusOK, user)
+
+		} else {
+			respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+			return
+		}
+	} else {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -294,6 +347,6 @@ func main() {
 	sMux.HandleFunc("POST /api/chirps", cfg.handlerCreateChirp)
 	sMux.HandleFunc("GET /api/chirps", cfg.handlerGetChirps)
 	sMux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirpByID)
-
+	sMux.HandleFunc("POST /api/login", cfg.handlerLogin)
 	log.Fatal(newServer.ListenAndServe())
 }

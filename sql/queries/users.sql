@@ -18,7 +18,12 @@ DELETE FROM users;
 -- name: GetUsers :many
 SELECT * FROM users;
 
--- name: GettUserFromEmail :one
+-- name: GetUserFromEmail :one
 SELECT *
 FROM users
 WHERE email = $1;
+
+-- name: AddPassword :exec
+UPDATE users
+SET hashed_password = $2
+WHERE id = $1;

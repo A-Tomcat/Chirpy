@@ -11,6 +11,22 @@ import (
 	"github.com/google/uuid"
 )
 
+const addPassword = `-- name: AddPassword :exec
+UPDATE users
+SET hashed_password = $2
+WHERE id = $1
+`
+
+type AddPasswordParams struct {
+	ID             uuid.UUID
+	HashedPassword string
+}
+
+func (q *Queries) AddPassword(ctx context.Context, arg AddPasswordParams) error {
+	_, err := q.db.ExecContext(ctx, addPassword, arg.ID, arg.HashedPassword)
+	return err
+}
+
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, created_at, updated_at, email)
 VALUES (
@@ -19,7 +35,7 @@ VALUES (
     NOW(),
     $1
 )
-RETURNING id, created_at, updated_at, email
+RETURNING id, created_at, updated_at, email, hashed_password
 `
 
 func (q *Queries) CreateUser(ctx context.Context, email string) (User, error) {
@@ -30,12 +46,13 @@ func (q *Queries) CreateUser(ctx context.Context, email string) (User, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Email,
+		&i.HashedPassword,
 	)
 	return i, err
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, created_at, updated_at, email FROM users
+SELECT id, created_at, updated_at, email, hashed_password FROM users
 WHERE id =  $1
 `
 
@@ -47,12 +64,32 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Email,
+		&i.HashedPassword,
+	)
+	return i, err
+}
+
+const getUserFromEmail = `-- name: GetUserFromEmail :one
+SELECT id, created_at, updated_at, email, hashed_password
+FROM users
+WHERE email = $1
+`
+
+func (q *Queries) GetUserFromEmail(ctx context.Context, email string) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUserFromEmail, email)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.HashedPassword,
 	)
 	return i, err
 }
 
 const getUsers = `-- name: GetUsers :many
-SELECT id, created_at, updated_at, email FROM users
+SELECT id, created_at, updated_at, email, hashed_password FROM users
 `
 
 func (q *Queries) GetUsers(ctx context.Context) ([]User, error) {
@@ -69,6 +106,7 @@ func (q *Queries) GetUsers(ctx context.Context) ([]User, error) {
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Email,
+			&i.HashedPassword,
 		); err != nil {
 			return nil, err
 		}
@@ -81,24 +119,6 @@ func (q *Queries) GetUsers(ctx context.Context) ([]User, error) {
 		return nil, err
 	}
 	return items, nil
-}
-
-const gettUserFromEmail = `-- name: GettUserFromEmail :one
-SELECT id, created_at, updated_at, email
-FROM users
-WHERE email = $1
-`
-
-func (q *Queries) GettUserFromEmail(ctx context.Context, email string) (User, error) {
-	row := q.db.QueryRowContext(ctx, gettUserFromEmail, email)
-	var i User
-	err := row.Scan(
-		&i.ID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Email,
-	)
-	return i, err
 }
 
 const reset = `-- name: Reset :exec
