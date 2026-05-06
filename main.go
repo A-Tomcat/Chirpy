@@ -21,7 +21,7 @@ import (
 
 /*
 cmd get to folder:
-r
+cd git/workspace/A-Tomcat/Chirpy
 
 to build the Server:
 go build -o out && ./out
@@ -168,7 +168,7 @@ func readBody(r *http.Request, params interface{}) error {
 	if err != nil {
 		return err
 	}
-	if err = json.Unmarshal(data, &params); err != nil {
+	if err = json.Unmarshal(data, params); err != nil {
 		return err
 	}
 	return nil
@@ -213,9 +213,6 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
-	type returnParams struct {
-		Chirps []Chirp
-	}
 	chirps, err := cfg.dbQueries.GetChirps(context.Background())
 	if err != nil {
 		respondWithError(w, 400, err.Error())
@@ -231,9 +228,30 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 		}
 		rChirps = append(rChirps, chirp)
 	}
-	respondWithJson(w, http.StatusOK, returnParams{
-		Chirps: rChirps,
-	})
+	respondWithJson(w, http.StatusOK, rChirps)
+}
+
+func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request) {
+	idString := r.PathValue("chirpID")
+	id, err := uuid.Parse(idString)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
+	chirp, err := cfg.dbQueries.GetChirpById(context.Background(), id)
+	if err != nil {
+
+		respondWithError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	nchirp := Chirp{
+		ID:        chirp.ID,
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	}
+	respondWithJson(w, http.StatusOK, nchirp)
 }
 
 func main() {
@@ -275,6 +293,7 @@ func main() {
 	sMux.HandleFunc("POST /api/users", cfg.handlerCreateUser)
 	sMux.HandleFunc("POST /api/chirps", cfg.handlerCreateChirp)
 	sMux.HandleFunc("GET /api/chirps", cfg.handlerGetChirps)
+	sMux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirpByID)
 
 	log.Fatal(newServer.ListenAndServe())
 }
