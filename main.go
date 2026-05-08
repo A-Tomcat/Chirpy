@@ -53,6 +53,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	dev            string
+	secret         string
 }
 
 type User struct {
@@ -60,6 +61,7 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 type Chirp struct {
 	ID        uuid.UUID `json:"id"`
@@ -190,14 +192,22 @@ func readBody(r *http.Request, params interface{}) error {
 
 func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
 	type Params struct {
-		Body    string
-		User_id uuid.UUID
+		Body string
 	}
 	params := Params{}
 	if err := readBody(r, &params); err != nil {
 		respondWithError(w, 400, err.Error())
 	}
-
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	id, err := auth.ValidateJWT(tokenString, cfg.secret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
 	if len(params.Body) > 140 {
 		respondWithError(w, 400, "Chirp exceeds character limit.")
 		return
@@ -210,7 +220,7 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 	newBody := cleanProfane(params.Body, profanities)
 	chirpParams := database.CreateChirpParams{
 		Body:   newBody,
-		UserID: params.User_id,
+		UserID: id,
 	}
 	chirp, err := cfg.dbQueries.CreateChirp(context.Background(), chirpParams)
 	if err != nil {
@@ -270,29 +280,34 @@ func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type Params struct {
-		Password string `json:"password"`
-		Email    string `json:"email"`
+		Password         string        `json:"password"`
+		Email            string        `json:"email"`
+		ExpiresInSeconds time.Duration `json:"expires_in_seconds"`
 	}
-	type returnParams struct {
-		Id        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
-	}
+
 	params := Params{}
 	err := readBody(r, &params)
 	if err != nil {
 		respondWithError(w, 400, err.Error())
 		return
 	}
+	if params.ExpiresInSeconds == 0 || params.ExpiresInSeconds > 3600 {
+		params.ExpiresInSeconds = 3600 * time.Second
+	}
 	u, err := cfg.dbQueries.GetUserFromEmail(context.Background(), params.Email)
 	if v, err := auth.CheckPasswordHash(params.Password, u.HashedPassword); err == nil {
 		if v {
-			user := returnParams{
-				Id:        u.ID,
+			token, err := auth.MakeJWT(u.ID, cfg.secret, params.ExpiresInSeconds)
+			if err != nil {
+				respondWithError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			user := User{
+				ID:        u.ID,
 				CreatedAt: u.CreatedAt,
 				UpdatedAt: u.UpdatedAt,
 				Email:     u.Email,
+				Token:     token,
 			}
 			respondWithJson(w, http.StatusOK, user)
 
@@ -322,9 +337,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	secretbase := os.Getenv("secret")
 	cfg := apiConfig{
 		dbQueries: database.New(db),
 		dev:       dev,
+		secret:    secretbase,
 	}
 	cfg.fileserverHits.Store(0)
 	err = db.Ping()
