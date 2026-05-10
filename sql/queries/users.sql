@@ -25,5 +25,5 @@ WHERE email = $1;
 
 -- name: AddPassword :exec
 UPDATE users
-SET hashed_password = $2
+SET hashed_password = $2, updated_at = NOW()
 WHERE id = $1;

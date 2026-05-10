@@ -57,11 +57,12 @@ type apiConfig struct {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 type Chirp struct {
 	ID        uuid.UUID `json:"id"`
@@ -70,6 +71,9 @@ type Chirp struct {
 	Body      string    `json:"body"`
 	UserID    uuid.UUID `json:"user_id"`
 }
+
+const token_expire = 3600 * time.Second
+const refresh_token_expirer = 5184000 * time.Second
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -280,34 +284,43 @@ func (cfg *apiConfig) handlerGetChirpByID(w http.ResponseWriter, r *http.Request
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type Params struct {
-		Password         string        `json:"password"`
-		Email            string        `json:"email"`
-		ExpiresInSeconds time.Duration `json:"expires_in_seconds"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
-
 	params := Params{}
 	err := readBody(r, &params)
 	if err != nil {
 		respondWithError(w, 400, err.Error())
 		return
 	}
-	if params.ExpiresInSeconds == 0 || params.ExpiresInSeconds > 3600 {
-		params.ExpiresInSeconds = 3600 * time.Second
-	}
 	u, err := cfg.dbQueries.GetUserFromEmail(context.Background(), params.Email)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+	}
+	ref_token_string := auth.MakeRefreshToken()
+	ref_params := database.CreateRefreshTokenParams{
+		Token:     ref_token_string,
+		UserID:    u.ID,
+		ExpiresAt: time.Now().Add(refresh_token_expirer),
+	}
+	_, err = cfg.dbQueries.CreateRefreshToken(context.Background(), ref_params)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+	}
 	if v, err := auth.CheckPasswordHash(params.Password, u.HashedPassword); err == nil {
 		if v {
-			token, err := auth.MakeJWT(u.ID, cfg.secret, params.ExpiresInSeconds)
+			token, err := auth.MakeJWT(u.ID, cfg.secret, token_expire)
 			if err != nil {
 				respondWithError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			user := User{
-				ID:        u.ID,
-				CreatedAt: u.CreatedAt,
-				UpdatedAt: u.UpdatedAt,
-				Email:     u.Email,
-				Token:     token,
+				ID:           u.ID,
+				CreatedAt:    u.CreatedAt,
+				UpdatedAt:    u.UpdatedAt,
+				Email:        u.Email,
+				Token:        token,
+				RefreshToken: ref_token_string,
 			}
 			respondWithJson(w, http.StatusOK, user)
 
@@ -319,7 +332,53 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
+}
 
+func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
+	type ReturnParams struct {
+		Token string `json:"token"`
+	}
+	unclean := r.Header.Get("Authorization")
+	if unclean == "" {
+		respondWithError(w, http.StatusNotFound, "No Authorization Header exists.")
+		return
+	}
+	token_string := strings.TrimPrefix(unclean, "Bearer ")
+	token, err := cfg.dbQueries.GetRefreshToken(context.Background(), token_string)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if token.RevokedAt.Valid || token.ExpiresAt.Before(time.Now()) {
+		respondWithError(w, http.StatusUnauthorized, "Token has expired or been revoked.")
+		return
+	}
+	u_id, err := cfg.dbQueries.GetUserFromRefreshToken(context.Background(), token_string)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	new_token, err := auth.MakeJWT(u_id, cfg.secret, token_expire)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+	}
+	respondWithJson(w, http.StatusOK, ReturnParams{
+		Token: new_token})
+
+}
+
+func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
+	unclean := r.Header.Get("Authorization")
+	if unclean == "" {
+		respondWithError(w, http.StatusNotFound, "No Authorization Header exists.")
+		return
+	}
+	token_string := strings.TrimPrefix(unclean, "Bearer ")
+	if err := cfg.dbQueries.RevokeRefreshToken(context.Background(), token_string); err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondWithJson(w, http.StatusNoContent, nil)
 }
 
 func main() {
@@ -365,5 +424,7 @@ func main() {
 	sMux.HandleFunc("GET /api/chirps", cfg.handlerGetChirps)
 	sMux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirpByID)
 	sMux.HandleFunc("POST /api/login", cfg.handlerLogin)
+	sMux.HandleFunc("POST /api/refresh", cfg.handlerRefresh)
+	sMux.HandleFunc("POST /api/revoke", cfg.handlerRevoke)
 	log.Fatal(newServer.ListenAndServe())
 }
