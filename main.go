@@ -368,17 +368,93 @@ func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
-	unclean := r.Header.Get("Authorization")
-	if unclean == "" {
-		respondWithError(w, http.StatusNotFound, "No Authorization Header exists.")
-		return
+	token_string, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
 	}
-	token_string := strings.TrimPrefix(unclean, "Bearer ")
 	if err := cfg.dbQueries.RevokeRefreshToken(context.Background(), token_string); err != nil {
 		respondWithError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	respondWithJson(w, http.StatusNoContent, nil)
+}
+
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
+	token_string, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+	u_id, err := auth.ValidateJWT(token_string, cfg.secret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	type Params struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+	params := Params{}
+	err = readBody(r, &params)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	new_pass, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	userParams := database.UpdateUserParams{
+		ID:             u_id,
+		Email:          params.Email,
+		HashedPassword: new_pass,
+	}
+	u, err := cfg.dbQueries.UpdateUser(context.Background(), userParams)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondWithJson(w, 200, User{
+		ID:        u.ID,
+		CreatedAt: u.CreatedAt,
+		UpdatedAt: u.UpdatedAt,
+		Email:     u.Email,
+	})
+}
+
+func (cfg *apiConfig) handleDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	token_string, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+	u_id, err := auth.ValidateJWT(token_string, cfg.secret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	idString := r.PathValue("chirpID")
+	c_id, err := uuid.Parse(idString)
+	if err != nil {
+		respondWithError(w, 400, err.Error())
+		return
+	}
+	chirp, err := cfg.dbQueries.GetChirpById(context.Background(), c_id)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	if chirp.UserID != u_id {
+		respondWithError(w, http.StatusForbidden, "No permission for this action.")
+		return
+	}
+	err = cfg.dbQueries.DeleteChirp(context.Background(), c_id)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondWithJson(w, http.StatusNoContent, "Chirp successfully deleted.")
 }
 
 func main() {
@@ -417,14 +493,16 @@ func main() {
 	appServer := http.StripPrefix("/app", fServer)
 	sMux.Handle("/app/", cfg.middlewareMetricsInc(appServer))
 	sMux.HandleFunc("GET /api/healthz", handler)
-	sMux.HandleFunc("POST /admin/reset", cfg.handlerResetMetrics)
 	sMux.HandleFunc("GET /admin/metrics", cfg.handlerShowMetrics)
-	sMux.HandleFunc("POST /api/users", cfg.handlerCreateUser)
-	sMux.HandleFunc("POST /api/chirps", cfg.handlerCreateChirp)
 	sMux.HandleFunc("GET /api/chirps", cfg.handlerGetChirps)
 	sMux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handlerGetChirpByID)
+	sMux.HandleFunc("POST /admin/reset", cfg.handlerResetMetrics)
+	sMux.HandleFunc("POST /api/users", cfg.handlerCreateUser)
+	sMux.HandleFunc("POST /api/chirps", cfg.handlerCreateChirp)
 	sMux.HandleFunc("POST /api/login", cfg.handlerLogin)
 	sMux.HandleFunc("POST /api/refresh", cfg.handlerRefresh)
 	sMux.HandleFunc("POST /api/revoke", cfg.handlerRevoke)
+	sMux.HandleFunc("PUT /api/users", cfg.handlerUpdateUser)
+	sMux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.handleDeleteChirp)
 	log.Fatal(newServer.ListenAndServe())
 }
