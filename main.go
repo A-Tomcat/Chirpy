@@ -54,6 +54,7 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 	dev            string
 	secret         string
+	polka_key      string
 }
 
 type User struct {
@@ -63,6 +64,7 @@ type User struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 type Chirp struct {
 	ID        uuid.UUID `json:"id"`
@@ -174,10 +176,11 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		respondWithError(w, 400, err.Error())
 	}
 	mUser := User{
-		ID:        user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email:     user.Email,
+		ID:          user.ID,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		Email:       user.Email,
+		IsChirpyRed: user.IsChirpyRed,
 	}
 	respondWithJson(w, http.StatusCreated, mUser)
 }
@@ -321,6 +324,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 				Email:        u.Email,
 				Token:        token,
 				RefreshToken: ref_token_string,
+				IsChirpyRed:  u.IsChirpyRed,
 			}
 			respondWithJson(w, http.StatusOK, user)
 
@@ -416,10 +420,11 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	respondWithJson(w, 200, User{
-		ID:        u.ID,
-		CreatedAt: u.CreatedAt,
-		UpdatedAt: u.UpdatedAt,
-		Email:     u.Email,
+		ID:          u.ID,
+		CreatedAt:   u.CreatedAt,
+		UpdatedAt:   u.UpdatedAt,
+		Email:       u.Email,
+		IsChirpyRed: u.IsChirpyRed,
 	})
 }
 
@@ -457,6 +462,39 @@ func (cfg *apiConfig) handleDeleteChirp(w http.ResponseWriter, r *http.Request) 
 	respondWithJson(w, http.StatusNoContent, "Chirp successfully deleted.")
 }
 
+func (cfg *apiConfig) handlerUpdgradeUser(w http.ResponseWriter, r *http.Request) {
+	api, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
+		return
+	}
+	if api != cfg.polka_key {
+		respondWithError(w, http.StatusUnauthorized, "Unauthorized. Access denied")
+		return
+	}
+	type Params struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+	params := Params{}
+	err = readBody(r, &params)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+	}
+	if params.Event != "user.upgraded" {
+		respondWithJson(w, http.StatusNoContent, nil)
+		return
+	}
+	err = cfg.dbQueries.UpgradeUser(context.Background(), params.Data.UserID)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respondWithJson(w, http.StatusNoContent, nil)
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -478,6 +516,8 @@ func main() {
 		dev:       dev,
 		secret:    secretbase,
 	}
+	polka_key := os.Getenv("POLKA_KEY")
+	cfg.polka_key = polka_key
 	cfg.fileserverHits.Store(0)
 	err = db.Ping()
 	if err != nil {
@@ -502,6 +542,7 @@ func main() {
 	sMux.HandleFunc("POST /api/login", cfg.handlerLogin)
 	sMux.HandleFunc("POST /api/refresh", cfg.handlerRefresh)
 	sMux.HandleFunc("POST /api/revoke", cfg.handlerRevoke)
+	sMux.HandleFunc("POST /api/polka/webhooks", cfg.handlerUpdgradeUser)
 	sMux.HandleFunc("PUT /api/users", cfg.handlerUpdateUser)
 	sMux.HandleFunc("DELETE /api/chirps/{chirpID}", cfg.handleDeleteChirp)
 	log.Fatal(newServer.ListenAndServe())
