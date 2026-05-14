@@ -23,3 +23,9 @@ WHERE id = $1;
 DELETE 
 FROM chirp
 WHERE id = $1;
+
+-- name: GetChirpyByUsers :many
+SELECT *
+FROM chirp
+WHERE user_id = $1
+ORDER BY created_at ASC;

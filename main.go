@@ -11,6 +11,7 @@ import (
 	"main/internal/database"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -244,9 +245,21 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
-	chirps, err := cfg.dbQueries.GetChirps(context.Background())
-	if err != nil {
-		respondWithError(w, 400, err.Error())
+	u_id := r.URL.Query().Get("author_id")
+	sortQ := r.URL.Query().Get("sort")
+	var chirps []database.Chirp
+	var err error
+	if u_id == "" {
+		chirps, err = cfg.dbQueries.GetChirps(context.Background())
+		if err != nil {
+			respondWithError(w, 400, err.Error())
+		}
+	} else {
+		id, err := uuid.Parse(u_id)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, err.Error())
+		}
+		chirps, err = cfg.dbQueries.GetChirpyByUsers(context.Background(), id)
 	}
 	rChirps := []Chirp{}
 	for _, c := range chirps {
@@ -258,6 +271,11 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 			UserID:    c.UserID,
 		}
 		rChirps = append(rChirps, chirp)
+	}
+	if sortQ == "desc" {
+		sort.Slice(rChirps, func(i, j int) bool {
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+		})
 	}
 	respondWithJson(w, http.StatusOK, rChirps)
 }
